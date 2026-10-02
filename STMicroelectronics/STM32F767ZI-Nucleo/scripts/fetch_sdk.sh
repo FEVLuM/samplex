@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #  Copyright (c) 2026 Eclipse ThreadX contributors
-# 
-#  This program and the accompanying materials are made available 
+#
+#  This program and the accompanying materials are made available
 #  under the terms of the MIT license which is available at
 #  https://opensource.org/license/mit.
-# 
+#
 #  SPDX-License-Identifier: MIT
-# 
-#  Contributors: 
+#
+#  Contributors:
 #     Ali Eissa - 2026 version.
 
 set -e
@@ -21,6 +21,7 @@ DRIVERS_DIR="${LIB_DIR}/Drivers"
 HAL_DEST="${DRIVERS_DIR}/STM32F7xx_HAL_Driver"
 CMSIS_DEVICE_DEST="${DRIVERS_DIR}/CMSIS/Device/ST/STM32F7xx"
 CMSIS_INCLUDE_DEST="${DRIVERS_DIR}/CMSIS/Include"
+NETX_DRIVER_DEST="${BOARD_DIR}/lib/netxduo"
 
 echo "=========================================="
 echo "STM32CubeF7 Standalone Driver Fetcher (Linux)"
@@ -32,11 +33,13 @@ echo ""
 rm -rf "${HAL_DEST}"
 rm -rf "${CMSIS_DEVICE_DEST}"
 rm -rf "${CMSIS_INCLUDE_DEST}"
+rm -rf "${NETX_DRIVER_DEST}"
 
 # Re-create directories
 mkdir -p "${HAL_DEST}"
 mkdir -p "${CMSIS_DEVICE_DEST}"
 mkdir -p "${CMSIS_INCLUDE_DEST}"
+mkdir -p "${NETX_DRIVER_DEST}"
 
 TEMP_DIR="${BOARD_DIR}/temp_clone"
 
@@ -75,6 +78,32 @@ git clone --depth 1 https://github.com/STMicroelectronics/cmsis-core.git "${TEMP
 cp -r "${TEMP_DIR}/CMSIS/Core/Include/"* "${CMSIS_INCLUDE_DEST}/"
 clean_temp
 echo "[OK] Up-to-date CMSIS Core Include headers copied"
+echo ""
+
+# 4. Fetch NetX Duo STM32 middleware drivers
+echo "[INFO] Cloning STM32 NetX Duo middleware drivers (depth=1)..."
+git clone --depth 1 https://github.com/STMicroelectronics/x-cube-azrtos-f7.git "${TEMP_DIR}"
+cp -f "${TEMP_DIR}/Middlewares/ST/netxduo/common/drivers/ethernet/nx_stm32_eth_driver.c" "${NETX_DRIVER_DEST}/"
+cp -f "${TEMP_DIR}/Middlewares/ST/netxduo/common/drivers/ethernet/nx_stm32_eth_driver.h" "${NETX_DRIVER_DEST}/"
+cp -f "${TEMP_DIR}/Middlewares/ST/netxduo/common/drivers/ethernet/lan8742/nx_stm32_phy_driver.c" "${NETX_DRIVER_DEST}/"
+cp -f "${TEMP_DIR}/Middlewares/ST/netxduo/common/drivers/ethernet/nx_stm32_phy_driver.h" "${NETX_DRIVER_DEST}/"
+cp -f "${TEMP_DIR}/Projects/STM32F767ZI-Nucleo/Applications/NetXDuo/Nx_TCP_Echo_Client/NetXDuo/Target/nx_stm32_eth_config.h" "${NETX_DRIVER_DEST}/"
+
+# ST modified the HAL ETH driver to match the new H7-style API for NetX Duo, so we must overwrite the default ones
+cp -f "${TEMP_DIR}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_eth.c" "${HAL_DEST}/Src/"
+cp -f "${TEMP_DIR}/Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_eth.h" "${HAL_DEST}/Inc/"
+
+clean_temp
+echo "[OK] NetX Duo STM32 Ethernet drivers copied"
+echo ""
+
+# 5. Fetch LAN8742 PHY driver
+echo "[INFO] Cloning LAN8742 PHY driver (depth=1)..."
+git clone --depth 1 https://github.com/STMicroelectronics/stm32-lan8742.git "${TEMP_DIR}"
+cp -f "${TEMP_DIR}/lan8742.c" "${NETX_DRIVER_DEST}/"
+cp -f "${TEMP_DIR}/lan8742.h" "${NETX_DRIVER_DEST}/"
+clean_temp
+echo "[OK] LAN8742 PHY drivers copied"
 echo ""
 
 echo "=========================================="

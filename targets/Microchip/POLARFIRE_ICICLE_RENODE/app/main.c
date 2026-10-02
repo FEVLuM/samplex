@@ -1,0 +1,278 @@
+/*
+ * Copyright (c) 2026 Eclipse ThreadX contributors
+ *
+ * This program and the accompanying materials are made available
+ * under the terms of the MIT license which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+// Portions of this file were generated with AI assistance.
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include "tx_api.h"
+#include "bsp/board.h"
+#include "bsp/console.h"
+#include "bsp/led.h"
+#include "bsp/selftest.h"
+
+#define DEMO_STACK_SIZE     4096
+#define DEMO_QUEUE_ITEMS    10
+
+/* Sample and report periods expressed in milliseconds, converted to ThreadX
+ * ticks so they stay correct if TX_TIMER_TICKS_PER_SECOND is retuned. */
+#define DEMO_MS_TO_TICKS(ms)    (((ms) * (ULONG)TX_TIMER_TICKS_PER_SECOND) / 1000UL)
+#define DEMO_SAMPLE_PERIOD_MS   500UL
+#define DEMO_REPORT_PERIOD_MS   1000UL
+
+typedef struct SENSOR_DATA_STRUCT {
+    ULONG    timestamp;
+    float    temperature_celsius;
+    uint32_t reserved;
+} SENSOR_DATA;
+
+#define DEMO_QUEUE_MSG_WORDS    (sizeof(SENSOR_DATA) / sizeof(ULONG))
+
+TX_THREAD      sampler_thread;
+TX_THREAD      analyzer_thread;
+TX_THREAD      reporter_thread;
+TX_QUEUE       sensor_queue;
+TX_EVENT_FLAGS_GROUP alarm_flags;
+
+UCHAR sampler_stack[DEMO_STACK_SIZE];
+UCHAR analyzer_stack[DEMO_STACK_SIZE];
+UCHAR reporter_stack[DEMO_STACK_SIZE];
+UCHAR queue_area[DEMO_QUEUE_ITEMS * sizeof(SENSOR_DATA)];
+
+#define ALARM_OVERTEMP      0x01
+#define EVENT_FLAG_UART_RX  0x02
+
+volatile char g_last_rx_char = 0;
+volatile uint32_t g_rx_irq_count = 0;
+volatile uint32_t g_rx_flag_errors = 0;
+
+/* Registered with bsp_console_set_rx_handler() in main(), and invoked from the
+ * MMUART1 trap path. The BSP no longer requires this application to define a
+ * fixed symbol, so an application that ignores console input links unchanged. */
+static void console_rx_handler(char c, void *context) {
+    (void)context;
+
+    g_last_rx_char = c;
+    g_rx_irq_count++;
+    if (tx_event_flags_set(&alarm_flags, EVENT_FLAG_UART_RX, TX_OR) != TX_SUCCESS) {
+        /* Cannot print from interrupt context; record the loss for the reporter. */
+        g_rx_flag_errors++;
+    }
+}
+
+static void console_print(const char *s) {
+    if (s) {
+        bsp_console_write(s, strlen(s));
+    }
+}
+
+void sampler_thread_entry(ULONG input);
+void analyzer_thread_entry(ULONG input);
+void reporter_thread_entry(ULONG input);
+
+static volatile ULONG s_sampler_runs = 0;
+static volatile ULONG s_analyzer_runs = 0;
+static volatile ULONG s_reporter_runs = 0;
+
+/* The startup checks themselves belong to the board and live in its BSP; this
+ * side only decides how their results are printed. scripts/test_renode.py
+ * asserts on the summary line. */
+
+static void selftest_report(int passed, const char *message, void *context) {
+    (void)context;
+
+    if (passed) {
+        console_print("[+] PASS: ");
+    } else {
+        console_print("[-] FAIL: ");
+    }
+    console_print(message);
+    console_print("\n");
+}
+
+static void run_startup_self_tests(void) {
+    char msg[96];
+    unsigned failures;
+
+    console_print("[SELF-TEST] Starting BSP & Runtime Verification...\n");
+
+    failures = bsp_self_test(selftest_report, NULL);
+
+    if (failures == 0U) {
+        console_print("[SELF-TEST] All startup verification tests PASSED!\n\n");
+    } else {
+        snprintf(msg, sizeof(msg),
+                 "[SELF-TEST] %u startup verification test(s) FAILED!\n\n",
+                 failures);
+        console_print(msg);
+    }
+}
+
+int main(void) {
+    /* Initialize Board Peripherals & MMUART1 */
+    bsp_board_init();
+
+    /* Attach the console receiver before any byte can arrive. Bytes that
+     * arrive with no handler attached are dropped rather than lost to a link
+     * error, which is what lets the shared demo link the same BSP. */
+    bsp_console_set_rx_handler(console_rx_handler, NULL);
+
+    console_print("\n====================================================\n");
+    console_print("Microchip PolarFire SoC Icicle Kit (Renode Target)\n");
+    console_print("64-Bit RISC-V Industrial LM75 Condition-Monitoring App\n");
+    console_print("====================================================\n");
+
+    /* Execute Dynamic Hardware & Runtime Self-Tests */
+    run_startup_self_tests();
+
+#ifdef TEST_FAULT_INJECTION
+    console_print("[FAULT-TEST] Injecting deliberate synchronous illegal instruction...\n");
+    __asm__ volatile(".word 0x00000000"); /* Illegal instruction to exercise trap_handler */
+#endif
+
+    /* Enter ThreadX Kernel */
+    tx_kernel_enter();
+
+    return 0;
+}
+
+void tx_application_define(void *first_unused_memory) {
+    (void)first_unused_memory;
+    UINT status;
+
+    /* Create Sensor Queue */
+    status = tx_queue_create(&sensor_queue, "sensor queue", DEMO_QUEUE_MSG_WORDS,
+                             queue_area, sizeof(queue_area));
+    if (status != TX_SUCCESS) {
+        console_print("[ERROR] Failed to create sensor queue\n");
+        return;
+    }
+
+    /* Create Event Flags Group */
+    status = tx_event_flags_create(&alarm_flags, "alarm flags");
+    if (status != TX_SUCCESS) {
+        console_print("[ERROR] Failed to create alarm flags\n");
+        return;
+    }
+
+    /* Create Sampler Thread */
+    status = tx_thread_create(&sampler_thread, "Sampler Thread", sampler_thread_entry, 0,
+                              sampler_stack, DEMO_STACK_SIZE,
+                              10, 10, TX_NO_TIME_SLICE, TX_AUTO_START);
+    if (status != TX_SUCCESS) {
+        console_print("[ERROR] Failed to create sampler thread\n");
+        return;
+    }
+
+    /* Create Analyzer Thread */
+    status = tx_thread_create(&analyzer_thread, "Analyzer Thread", analyzer_thread_entry, 0,
+                              analyzer_stack, DEMO_STACK_SIZE,
+                              8, 8, TX_NO_TIME_SLICE, TX_AUTO_START);
+    if (status != TX_SUCCESS) {
+        console_print("[ERROR] Failed to create analyzer thread\n");
+        return;
+    }
+
+    /* Create Reporter Thread */
+    status = tx_thread_create(&reporter_thread, "Reporter Thread", reporter_thread_entry, 0,
+                              reporter_stack, DEMO_STACK_SIZE,
+                              12, 12, TX_NO_TIME_SLICE, TX_AUTO_START);
+    if (status != TX_SUCCESS) {
+        console_print("[ERROR] Failed to create reporter thread\n");
+        return;
+    }
+}
+
+void sampler_thread_entry(ULONG input) {
+    (void)input;
+    SENSOR_DATA data;
+    float simulated_temp = 25.0f;
+
+    while (1) {
+        s_sampler_runs++;
+        data.timestamp = tx_time_get();
+        data.temperature_celsius = simulated_temp;
+        data.reserved = 0x55AA55AA;
+
+        /* Send telemetry to Queue */
+        UINT status = tx_queue_send(&sensor_queue, &data, TX_NO_WAIT);
+        if (status != TX_SUCCESS) {
+            console_print("[WARN] Telemetry queue send failed\n");
+        }
+
+        simulated_temp += 2.5f;
+        if (simulated_temp > 55.0f) {
+            simulated_temp = 25.0f;
+        }
+
+        tx_thread_sleep(DEMO_MS_TO_TICKS(DEMO_SAMPLE_PERIOD_MS));
+    }
+}
+
+void analyzer_thread_entry(ULONG input) {
+    (void)input;
+    SENSOR_DATA data;
+    static int s_verified_queue = 0;
+
+    while (1) {
+        if (tx_queue_receive(&sensor_queue, &data, TX_WAIT_FOREVER) == TX_SUCCESS) {
+            s_analyzer_runs++;
+            if (data.reserved != 0x55AA55AA) {
+                console_print("[-] FAIL: Queue payload corruption detected!\n");
+            } else if (!s_verified_queue) {
+                s_verified_queue = 1;
+                console_print("[+] PASS: Queue 16-byte structure round-trip verified\n");
+            }
+
+            if (data.temperature_celsius > 45.0f) {
+                UINT status = tx_event_flags_set(&alarm_flags, ALARM_OVERTEMP, TX_OR);
+                if (status != TX_SUCCESS) {
+                    console_print("[WARN] Alarm flag set failed\n");
+                }
+                bsp_led_on();
+            } else {
+                bsp_led_off();
+            }
+        }
+    }
+}
+
+void reporter_thread_entry(ULONG input) {
+    (void)input;
+    char msg_buf[160];
+    ULONG actual_flags;
+
+    while (1) {
+        s_reporter_runs++;
+        snprintf(msg_buf, sizeof(msg_buf),
+                 "[Monitor] Ticks: %lu | Active Runs: Sampler=%lu, Analyzer=%lu, Reporter=%lu\n",
+                 (unsigned long)tx_time_get(),
+                 (unsigned long)s_sampler_runs,
+                 (unsigned long)s_analyzer_runs,
+                 (unsigned long)s_reporter_runs);
+        console_print(msg_buf);
+
+        if (tx_event_flags_get(&alarm_flags, ALARM_OVERTEMP, TX_OR_CLEAR, &actual_flags, TX_NO_WAIT) == TX_SUCCESS) {
+            console_print("[LM75 Sensor] Temperature: OVERTEMP ALARM TRIGGERED (>45.0C)\n");
+        }
+
+        if (tx_event_flags_get(&alarm_flags, EVENT_FLAG_UART_RX, TX_OR_CLEAR, &actual_flags, TX_NO_WAIT) == TX_SUCCESS) {
+            char rx_buf[96];
+            snprintf(rx_buf, sizeof(rx_buf),
+                     "[Console RX] PLIC IRQ 91 handled: byte '%c' received and processed by ThreadX\n",
+                     g_last_rx_char);
+            console_print(rx_buf);
+        }
+
+        tx_thread_sleep(DEMO_MS_TO_TICKS(DEMO_REPORT_PERIOD_MS));
+    }
+}

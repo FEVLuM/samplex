@@ -1,0 +1,56 @@
+/*
+ * Copyright (c) 2026 Eclipse ThreadX contributors
+ *
+ * This program and the accompanying materials are made available
+ * under the terms of the MIT license which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+// Portions of this file were generated with AI assistance.
+
+#include "bsp/console.h"
+#include "board_config.h"
+#include "polarfire_console.h"
+#include <stddef.h>
+
+extern void uart_init(void);
+extern void uart_write(const char *data, size_t len);
+
+/* Receive handler registered through bsp_console_set_rx_handler(). Written
+ * from thread context and read from the MMUART1 trap path, so both are
+ * volatile: the compiler must not cache either across the store. A single
+ * aligned pointer store is atomic on RV64, so no further guard is needed for
+ * attaching or detaching. */
+static bsp_console_rx_fn volatile s_rx_handler = NULL;
+static void *volatile s_rx_context = NULL;
+
+void bsp_console_init(void) {
+#if BSP_HAS_CONSOLE
+    uart_init();
+#endif
+}
+
+void bsp_console_write(const char *data, size_t length) {
+#if BSP_HAS_CONSOLE
+    if (!data || length == 0) return;
+    uart_write(data, length);
+#endif
+}
+
+void bsp_console_set_rx_handler(bsp_console_rx_fn handler, void *context) {
+    /* Publish the context first: the trap path reads the handler to decide
+     * whether to dispatch at all, so a handler that is visible must already
+     * have its context beside it. */
+    s_rx_context = context;
+    s_rx_handler = handler;
+}
+
+void polarfire_console_rx_dispatch(char c) {
+    bsp_console_rx_fn handler = s_rx_handler;
+
+    if (handler != NULL) {
+        handler(c, s_rx_context);
+    }
+}

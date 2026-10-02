@@ -1,0 +1,62 @@
+/*
+ * Copyright (c) 2026 Eclipse ThreadX contributors
+ *
+ * This program and the accompanying materials are made available
+ * under the terms of the MIT license which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+// Portions of this file were generated with AI assistance.
+
+#ifndef BSP_CONSOLE_H
+#define BSP_CONSOLE_H
+
+#include <stddef.h>
+
+/**
+ * @brief Initialize the serial console peripheral and pin muxing.
+ */
+void bsp_console_init(void);
+
+/**
+ * @brief Write a buffer of data to the serial console.
+ * 
+ * @param data Pointer to the character buffer to send.
+ * @param length Number of characters to transmit.
+ */
+void bsp_console_write(const char *data, size_t length);
+
+/**
+ * @brief Receives one byte that arrived on the console.
+ *
+ * Invoked from interrupt context on boards that drive their console receiver
+ * from an interrupt, so it must not block, allocate, or call any ThreadX
+ * service that is illegal from an ISR.
+ *
+ * @param c       The byte that arrived.
+ * @param context The context pointer that was handed to
+ *                bsp_console_set_rx_handler().
+ */
+typedef void (*bsp_console_rx_fn)(char c, void *context);
+
+/**
+ * @brief Registers the handler invoked for each byte the console receives.
+ *
+ * A board that raises an interrupt per received byte must route it here rather
+ * than to a symbol the application is required to define: an application that
+ * does not care about console input should not have to define anything to
+ * link. Bytes that arrive with no handler attached are dropped.
+ *
+ * Boards whose console has no receive-interrupt path still implement this
+ * call; the handler they store is simply never invoked. An application can
+ * therefore register unconditionally.
+ *
+ * @param handler Handler to invoke per received byte. Passing NULL detaches
+ *                the current handler.
+ * @param context Opaque pointer passed back to @p handler unmodified.
+ */
+void bsp_console_set_rx_handler(bsp_console_rx_fn handler, void *context);
+
+#endif /* BSP_CONSOLE_H */

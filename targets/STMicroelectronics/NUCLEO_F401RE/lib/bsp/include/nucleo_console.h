@@ -1,0 +1,42 @@
+/*
+ * Copyright (c) 2026 Eclipse ThreadX contributors
+ *
+ * This program and the accompanying materials are made available
+ * under the terms of the MIT license which is available at
+ * https://opensource.org/license/mit.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+// Portions of this file were generated with AI assistance.
+
+#ifndef NUCLEO_CONSOLE_H
+#define NUCLEO_CONSOLE_H
+
+#include <stddef.h>
+
+/**
+ * @brief Block until length characters have been read from the console UART.
+ *
+ * Target-local companion to bsp_console_write(). The generic <bsp/console.h>
+ * contract is write-only, so console input stays board specific rather than
+ * forcing an unimplemented read into every target's BSP.
+ *
+ * @param data   Buffer receiving the characters read.
+ * @param length Number of characters to read.
+ */
+void nucleo_console_read(char *data, size_t length);
+
+/**
+ * @brief Hands one received character to the registered bsp/console.h handler.
+ *
+ * Board-private, and currently without a caller: USART2 is read by polling on
+ * this board, so no interrupt delivers bytes one at a time. It is the hook a
+ * USART2_IRQHandler would call, and it is what reads the pointer that
+ * bsp_console_set_rx_handler() stores.
+ *
+ * @param c The character read out of the USART2 data register.
+ */
+void nucleo_console_rx_dispatch(char c);
+
+#endif /* NUCLEO_CONSOLE_H */

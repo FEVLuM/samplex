@@ -1,0 +1,43 @@
+/*
+ * Copyright (c) 2026 Eclipse ThreadX contributors
+ *
+ * This program and the accompanying materials are made available
+ * under the terms of the MIT license which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+// Portions of this file were generated with AI assistance.
+
+#include "hwtimer.h"
+#include "tx_api.h"
+
+/* hwtimer.h derives TICK_CYCLES from BSP_TICK_RATE_HZ without seeing the
+ * ThreadX headers. This translation unit sees both, so it is where the two are
+ * checked against each other. C99 has no _Static_assert, hence the negative
+ * array size idiom. */
+typedef char bsp_tick_rate_matches_threadx[
+    (BSP_TICK_RATE_HZ == (unsigned long long)TX_TIMER_TICKS_PER_SECOND) ? 1 : -1];
+
+
+void hwtimer_init(void) {
+    /* Program initial mtimecmp target to current mtime + 10,000 cycles (10ms) */
+    uint64_t current_mtime = MTIME_REG;
+    HART1_MTIMECMP_REG = current_mtime + TICK_CYCLES;
+}
+
+uint64_t hwtimer_next_cmp(uint64_t current_cmp, uint64_t now) {
+    uint64_t next_cmp = current_cmp + TICK_CYCLES;
+
+    /* Deadline already missed: rebase onto now rather than chasing it. */
+    if (next_cmp <= now) {
+        next_cmp = now + TICK_CYCLES;
+    }
+
+    return next_cmp;
+}
+
+void hwtimer_ack(void) {
+    HART1_MTIMECMP_REG = hwtimer_next_cmp(HART1_MTIMECMP_REG, MTIME_REG);
+}

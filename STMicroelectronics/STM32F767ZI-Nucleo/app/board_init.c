@@ -13,10 +13,20 @@
  */
 
 #include "board_init.h"
+#include "tx_api.h"
 #include <string.h>
+#include <stdio.h>
+#include "ansi_colors.h"
 
 /* Global UART handler */
 UART_HandleTypeDef huart3;
+
+/* Global Ethernet handle */
+ETH_HandleTypeDef heth;
+
+/* Place the Ethernet DMA descriptors in the .nx_data section (uncacheable memory) */
+__attribute__((section(".RxDecripSection"))) ETH_DMADescTypeDef DMARxDscrTab[ETH_RX_DESC_CNT];
+__attribute__((section(".TxDecripSection"))) ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT];
 
 void SystemClock_Config(void);
 void MPU_Config(void);
@@ -44,6 +54,9 @@ void board_init(void)
 
     /* Initialize USART3 console */
     MX_USART3_UART_Init();
+
+    /* Initialize I2C1 for environmental sensors */
+    board_i2c_init();
 }
 
 /**
@@ -188,8 +201,29 @@ void MPU_Config(void)
   MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  /* Configure the MPU for the NetXDuo/Ethernet DMA buffers in SRAM2 (0x20060000) */
+  MPU_InitStruct.Number = MPU_REGION_NUMBER1;
+  MPU_InitStruct.BaseAddress = 0x20060000;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_128KB;
+  MPU_InitStruct.SubRegionDisable = 0x0;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL1;
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
+  /* Enable I-Cache */
+  SCB_EnableICache();
+
+  /* Enable D-Cache */
+  SCB_EnableDCache();
 }
 
 /**
@@ -203,3 +237,136 @@ void Error_Handler(void)
   {
   }
 }
+
+void ETH_IRQHandler(void)
+{
+    HAL_ETH_IRQHandler(&heth);
+}
+
+
+
+void board_ethernet_init(void)
+{
+    /* Unique MAC address generation based on STM32 96-bit Unique ID (UID) */
+    static uint8_t MACAddr[6];
+    uint32_t uid0 = HAL_GetUIDw0();
+    
+    MACAddr[0] = 0x02; /* Locally administered unicast MAC address */
+    MACAddr[1] = 0x00;
+    MACAddr[2] = (uint8_t)(uid0 >> 24);
+    MACAddr[3] = (uint8_t)(uid0 >> 16);
+    MACAddr[4] = (uint8_t)(uid0 >> 8);
+    MACAddr[5] = (uint8_t)(uid0);
+
+    heth.Instance = ETH;
+    heth.Init.MACAddr = MACAddr;
+    heth.Init.MediaInterface = HAL_ETH_RMII_MODE;
+    heth.Init.TxDesc = DMATxDscrTab;
+    heth.Init.RxDesc = DMARxDscrTab;
+    heth.Init.RxBuffLen = 1524;
+
+    printf(TAG_HAL " " MSG_INFO "Calling HAL_ETH_Init...\r\n" ANSI_RESET);
+    HAL_StatusTypeDef status = HAL_ETH_Init(&heth);
+    if (status == HAL_OK)
+    {
+        printf(TAG_HAL " " MSG_SUCCESS "HAL_ETH_Init succeeded (status: %d)\r\n" ANSI_RESET, status);
+    }
+    else
+    {
+        printf(TAG_HAL " " MSG_ERROR "HAL_ETH_Init failed (status: %d)\r\n" ANSI_RESET, status);
+    }
+
+    /* Initialize the PHY transceiver and wait for the link to be established.
+       This ensures that when NetX Duo enables the interface during startup,
+       the hardware link is already up, avoiding driver initialization failures. */
+    extern int32_t nx_eth_phy_init(void);
+    extern int32_t nx_eth_phy_get_link_state(void);
+    printf(TAG_NETWORK " " MSG_INFO "Initializing PHY transceiver...\r\n" ANSI_RESET);
+    if (nx_eth_phy_init() == 0)
+    {
+        printf(TAG_NETWORK " " MSG_WARNING "Waiting for Ethernet link (max 3s)...\r\n" ANSI_RESET);
+        uint32_t retries = 300; /* 300 * 10ms = 3 seconds */
+        while (nx_eth_phy_get_link_state() <= 1)
+        {
+            HAL_Delay(10);
+            retries--;
+            if (retries == 0)
+            {
+                printf(TAG_NETWORK " " MSG_ERROR "Ethernet link timeout! Cable connected?\r\n" ANSI_RESET);
+                break;
+            }
+        }
+        if (nx_eth_phy_get_link_state() > 1)
+        {
+            printf(TAG_NETWORK " " MSG_SUCCESS "Ethernet link up!\r\n" ANSI_RESET);
+        }
+    }
+    else
+    {
+        printf("[NetX] Failed to initialize PHY transceiver!\r\n");
+    }
+}
+
+/* Override the weak HAL_GetTick function to provide a working tick source
+   both before and after the ThreadX scheduler starts. */
+uint32_t HAL_GetTick(void)
+{
+    /* If the ThreadX scheduler is running, use the ThreadX time converted to milliseconds.
+       Perform intermediate multiplication in 64-bit space to prevent early integer overflow. */
+    if (tx_thread_identify() != TX_NULL)
+    {
+        return (uint32_t)(((uint64_t)tx_time_get() * 1000) / TX_TIMER_TICKS_PER_SECOND);
+    }
+    else
+    {
+        /* Return actual elapsed milliseconds based on SysTick hardware counter wrap-around.
+           Since SysTick counts down from LOAD to 0, a wrap-around occurs when the current 
+           value is greater than the last checked value, or if COUNTFLAG is set. */
+        static uint32_t last_val = 0;
+        static uint32_t ms_ticks = 0;
+        
+        uint32_t ctrl = SysTick->CTRL;
+        uint32_t val = SysTick->VAL;
+        
+        if ((ctrl & SysTick_CTRL_COUNTFLAG_Msk) || (val > last_val))
+        {
+            ms_ticks++;
+        }
+        last_val = val;
+        return ms_ticks;
+    }
+}
+
+/* Global I2C handler */
+I2C_HandleTypeDef hi2c1;
+
+void board_i2c_init(void)
+{
+    hi2c1.Instance = I2C1;
+    hi2c1.Init.Timing = 0x20404768; /* 100 kHz standard mode timing value at 54 MHz I2C clock */
+    hi2c1.Init.OwnAddress1 = 0;
+    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c1.Init.OwnAddress2 = 0;
+    hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* Configure Analogue filter */
+    if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* Configure Digital filter */
+    if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+

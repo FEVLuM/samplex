@@ -1,0 +1,72 @@
+/*
+ * Copyright (c) 2026 Eclipse ThreadX contributors
+ *
+ * This program and the accompanying materials are made available
+ * under the terms of the MIT license which is available at
+ * https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+// Portions of this file were generated with AI assistance.
+
+#include "bsp/console.h"
+#include "board_config.h"
+
+#include <stddef.h>
+
+/* TODO: Include vendor UART / Serial hardware headers here */
+
+void bsp_console_init(void)
+{
+#if BSP_HAS_CONSOLE
+    /* TODO: Enable UART peripheral and GPIO clocks.
+     * Configure RX/TX pins for alternate function serial mode and configure baud rate to BSP_UART_BAUDRATE.
+     */
+#endif
+}
+
+void bsp_console_write(const char *data, size_t length)
+{
+#if BSP_HAS_CONSOLE
+    /* TODO: Transmit character array over serial UART hardware */
+    (void)data;
+    (void)length;
+#else
+    (void)data;
+    (void)length;
+#endif
+}
+
+/* Handler registered by the application to receive console input.
+ *
+ * Store it even if this board has no receive-interrupt path: the contract lets
+ * an application register unconditionally, and a board that silently drops the
+ * registration would make a portable demo fail only on that board. */
+static bsp_console_rx_fn volatile console_rx_handler = NULL;
+static void *volatile console_rx_context = NULL;
+
+void bsp_console_set_rx_handler(bsp_console_rx_fn handler, void *context)
+{
+    /* Publish the context first, so a handler visible to an interrupt already
+     * has its context beside it. */
+    console_rx_context = context;
+    console_rx_handler = handler;
+}
+
+/*
+ * Call this from the board's UART receive interrupt handler, once per byte.
+ *
+ * TODO: Enable the peripheral's RX interrupt in bsp_console_init() and invoke
+ * this from its IRQ handler. A board that only polls its console can leave
+ * this without a caller; the registration above still has to work.
+ */
+void bsp_console_rx_dispatch(char c)
+{
+    bsp_console_rx_fn handler = console_rx_handler;
+
+    if (handler != NULL)
+    {
+        handler(c, console_rx_context);
+    }
+}

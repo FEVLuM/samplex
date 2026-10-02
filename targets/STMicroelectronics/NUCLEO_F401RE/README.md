@@ -1,0 +1,253 @@
+<!--
+  Copyright (c) 2026 Eclipse ThreadX contributors
+ 
+  This program and the accompanying materials are made available 
+  under the terms of the MIT license which is available at
+  https://opensource.org/license/mit.
+ 
+  SPDX-License-Identifier: MIT
+ 
+  Contributors: 
+      Eclipse ThreadX contributors - Initial version and validation.
+-->
+
+# Eclipse ThreadX NUCLEO-F401RE Target
+
+This target validates the NUCLEO-F401RE Board Support Package for Eclipse ThreadX.
+
+The application it builds is **`apps/threadx_demo/main.c`**, the shared portable demo, not a source file of its own. That same file is built by `targets/Microchip/POLARFIRE_ICICLE_RENODE` for 64-bit RISC-V, and CI asserts on the same console output from both, so this target's role is to prove the BSP contracts hold on 32-bit Cortex-M4. The demo creates multiple threads, blinks the onboard LED, and reports runtime statistics through USART2 using the ST-LINK virtual COM port; it reaches all three through `<bsp/...>` and names no STM32 symbol.
+
+Everything board-specific lives under `lib/bsp/` and `app/common/`: this target integrates the Eclipse ThreadX RTOS with the STM32CubeF4 HAL library in a clean, self-contained CMake build structure.
+
+Third-party licensing information is provided in [NOTICE.md](NOTICE.md).
+
+## Building the Demo Application
+
+### Prerequisites
+- Install a GNU Arm Embedded Toolchain with `arm-none-eabi-` prefix
+- Common source: [Arm GNU Toolchain Downloads](https://developer.arm.com/Tools-and-Software/open-source-software-developer-tools/gnu-toolchain)
+
+Verify the toolchain:
+```bash
+arm-none-eabi-gcc --version
+arm-none-eabi-objdump --version
+```
+
+### CMake-Based Build
+From the `targets/STMicroelectronics/NUCLEO_F401RE` directory:
+
+```bash
+cmake -Bbuild -GNinja -DCMAKE_TOOLCHAIN_FILE=cmake/arm-gcc-cortex-m4.cmake .
+cmake --build ./build/
+```
+
+This uses `cmake/arm-gcc-cortex-m4.cmake` and the top-level `CMakeLists.txt` to configure the cross-compiler flags and produce the target binary image.
+
+### Build Scripts
+The package includes build scripts under the `scripts/` directory for convenience:
+- `scripts/build.ps1` (Windows PowerShell)
+- `scripts/build.sh` (Linux Bash)
+
+These scripts clean the build directory, run CMake configuration, and compile the target executable.
+
+## Emulation & Regression Testing
+
+Renode ships no NUCLEO-F401RE board description, so `renode/nucleo_f401re.repl`
+derives one from the generic STM32F4 CPU platform, correcting Flash to 512 KB
+and SRAM to 96 KB. Those limits matter: the linker script's heap reservation and
+the `_sbrk()` bound both depend on them.
+
+### Interactive Simulation
+
+```bash
+renode targets/STMicroelectronics/NUCLEO_F401RE/renode/nucleo_f401re_demo.resc
+```
+
+USART2 is the demo console, shown in a terminal analyzer.
+
+### Automated Headless Test
+
+```bash
+python3 targets/STMicroelectronics/NUCLEO_F401RE/scripts/test_renode.py
+```
+
+Runs `nucleo_f401re_ci.resc`, which advances a fixed span of virtual time and
+quits on its own, so the result does not depend on host speed. Exits non-zero
+if any assertion is unmet. This gates CI as the `test-nucleo-renode` job.
+
+The Robot Framework suite in `renode/nucleo_f401re_demo.robot` covers the same
+ground for use with `renode-test`.
+
+### What is asserted
+
+The board runs eight startup self-tests before `tx_kernel_enter()` and the demo
+prints a `[SELF-TEST]` summary the harness asserts on. The checks live in
+`lib/bsp/src/bsp_selftest.c` behind `<bsp/selftest.h>`, because they test the
+BSP - its linker reservations, its clock tree, its HAL timebase - rather than
+the application. `main.c` supplies only the reporting callback:
+
+| # | Self-test | Guards against |
+|---|-----------|----------------|
+| 1 | `_sbrk()` allocation lands inside the heap reservation | heap escaping its linker reservation |
+| 2 | `_sbrk()` releases back to the heap base | broken negative-increment path |
+| 3 | `_sbrk()` underflow rejected with `EINVAL` | shrinking below the heap base |
+| 4 | `_sbrk()` rejects a request that fits SRAM but not the heap | bounding the heap at the end of SRAM |
+| 5 | Heap reservation ends at or below the ThreadX byte pool | linker script layout regression |
+| 6 | `SystemCoreClock` is 84 MHz | a silently wrong PLL configuration |
+| 7 | HAL timebase (TIM2) tick advancing | `HAL_InitTick()` re-entry leaving TIM2 stopped |
+| 8 | `bsp_ram_region()` stays clear of the heap and inside SRAM | a bad stack reservation handing the byte pool memory it does not own |
+
+Test 4 is the regression guard for the heap bound. Requesting 32 KB fits inside
+the 96 KB SRAM but far exceeds the heap reservation, so bounding `_sbrk()`
+against the end of SRAM rather than `_heap_limit` let it succeed and handed
+`malloc()` memory owned by the ThreadX byte pool and the main stack.
+
+Beyond the self-tests, the harness asserts the boot banner reaches the console,
+the blink thread and the 1 Hz application timer have both run (covering the LED
+path and the timer service), and that the mutex, queue, event-flag and semaphore
+counters are all non-zero.
+
+## Flashing the Application
+
+Connect the NUCLEO-F401RE board via the ST-LINK USB connector.
+
+Copy:
+
+  build/app/nucleo_f401re.bin
+
+to the mounted NUCLEO-F401RE mass-storage device.
+
+The board automatically resets and starts execution.
+
+To view console output:
+- Open a serial terminal (such as PuTTY or Tera Term)
+- Select the ST-LINK Virtual COM Port (COM3 in this case)
+- Configure 115200 baud, 8-N-1
+
+## Hardware Configuration
+
+The BSP is preconfigured to work with the physical STMicroelectronics NUCLEO-F401RE board:
+- **MCU**: Single-core ARM Cortex-M4 running at 84 MHz
+- **Onboard User LED**: LD2 connected to pin `PA5` for heartbeat feedback
+- **UART Console**: USART2 connected to the ST-Link virtual COM port on pins `PA2` (TX) and `PA3` (RX) configured for 115200 baud, 8N1
+- **HAL Timebase Tick**: TIM2 General Purpose Timer configured for 1ms intervals (SysTick remains owned by ThreadX)
+
+### Clock Tree Configuration
+System clock is configured via the PLL:
+- **Input source**: HSE bypass (8 MHz from ST-Link MCO pin)
+- **PLL configuration**: M = 8, N = 336, P = 4, Q = 7
+- **SYSCLK**: 84 MHz (maximum frequency of the STM32F401)
+- **HCLK (AHB)**: 84 MHz
+- **PCLK1 (APB1)**: 42 MHz (peripheral limit)
+- **PCLK2 (APB2)**: 84 MHz
+- **Flash Latency**: 2 Wait States (`FLASH_LATENCY_2`)
+
+### TIM2 Configuration
+TIM2 is configured for the HAL 1ms timebase tick:
+- **Timer clock source**: 84 MHz (from APB1 timer branch)
+- **Prescaler**: `83` (reduces timer frequency to 1 MHz)
+- **Period**: `999` (counts 1000 cycles at 1 MHz, triggering an interrupt every 1ms)
+- **Handler**: `TIM2_IRQHandler` triggers update event to increment `uwTick`
+
+
+## Interrupt Handling & Priority Configuration
+
+All system exceptions and hardware peripheral interrupts trap to vector addresses managed by the Nested Vectored Interrupt Controller (NVIC).
+
+## Interrupt Configuration
+
+The BSP separates the ThreadX scheduler tick from the STM32 HAL timebase to avoid conflicts between the RTOS and HAL timing services.
+
+- **SysTick** (ThreadX, Priority 4)
+  - Provides the ThreadX scheduler tick (100 Hz).
+
+- **PendSV** (ThreadX, Priority 15)
+  - Performs context switching between threads.
+
+- **SVCall** (ThreadX, Priority 15)
+  - Used during ThreadX kernel startup.
+
+- **TIM2** (STM32 HAL, Priority 15)
+  - Provides the HAL 1 ms timebase tick.
+
+- **USART2**
+  - Operates in polling mode and does not use interrupts in this demonstration.
+  - `bsp_console_set_rx_handler()` is therefore implemented as a store only: the handler an application registers is kept, but nothing on this board delivers received bytes one at a time to invoke it. `nucleo_console_rx_dispatch()` in `lib/bsp/src/bsp_console.c` is the hook a `USART2_IRQHandler` would call. The contract is honoured anyway so a portable application can register unconditionally.
+
+### HAL Timebase Integration 
+
+ThreadX requires exclusive ownership of the SysTick exception for scheduler operation. To avoid conflicts, the STM32 HAL timebase is implemented using TIM2 instead of the default SysTick source.
+
+The BSP overrides `HAL_InitTick()` to configure TIM2 as the HAL timebase and provides custom implementations of `HAL_SuspendTick()` and `HAL_ResumeTick()` in `lib/bsp/src/bsp_board.c`. These functions enable and disable the TIM2 update interrupt without affecting the ThreadX scheduler tick.
+
+
+## File Organization
+
+- **`../../../apps/threadx_demo/`**: The application this target builds. Shared
+  with the PolarFire SoC Icicle Kit; nothing in it is board specific.
+- **`app/`**: Boot setup and the CMake glue that pulls in the shared application
+  - **`app/common/`**: Vendor HAL MSP hooks and boot sources
+  - **`app/common/startup/`**: Linker scripts and assembly boot startup code
+- **`lib/`**: Libraries and dependencies
+  - **`lib/bsp/`**: Board support implementing the generic `<bsp/*.h>` interfaces
+    (`bsp_board.c` clocks and HAL timebase, `bsp_led.c` LD2, `bsp_console.c`
+    USART2 and the receive-handler registration, `bsp_memory.c` the application
+    RAM budget, `bsp_selftest.c` the startup checks, `newlib_stubs.c` newlib
+    syscall overrides)
+  - **`lib/stm32cubef4/`**: HAL Driver wrapper and platform drivers
+  - **`lib/threadx/`**: ThreadX user configuration file (`tx_user.h`)
+- **`cmake/`**: Cross-compilation module definitions
+- **`scripts/`**: Utility build automation scripts and the headless Renode test runner
+- **`renode/`**: Renode platform description, run scripts, and Robot Framework suite
+
+
+## Validation Record
+
+### Verification Environment
+- **Toolchain**: Arm GNU Toolchain 14.3.Rel1 (GCC 14.3.1), the version pinned by CI and by the ThreadX Cortex-M ports
+- **Static ROM usage**: 22272 Bytes (4.25% of 512 KB Flash), including the startup self-tests
+- **Static RAM usage**: 6000 Bytes (6.10% of 96 KB RAM)
+- **Dynamic Stack & Buffer allocation**: Stacks (8 x 1024 bytes) and Queue buffer (40 bytes) are dynamically allocated from the `TX_BYTE_POOL` (consuming 8312 bytes total, including pool headers).
+- **Board Hardware**: NUCLEO-F401RE
+
+### Hardware Verification Checklist
+- [x] **Board boots successfully**: System clock configuration correctly executes and sets SysClk to 84 MHz.
+- [x] **LED heartbeat operates correctly**: Onboard user LED LD2 (PA5) blinks at a steady rate.
+- [x] **UART console operates at 115200 baud**: Diagnostic outputs are cleanly transmitted over USART2 and displayed in the terminal.
+- [x] **ThreadX scheduler runs correctly**: RTOS scheduler successfully handles 8 threads with priorities ranging from 9 to 15.
+- [x] **Thread Registry & Traversal**: Monitor thread queries thread names, states, run counts, and priorities dynamically using `tx_thread_info_get()`.
+- [x] **Stack High-Water Mark Profiling**: Dynamic upward memory scanning verifies stack peaks (e.g., reporter thread at 42%, other tasks at 11-14%).
+- [x] **RTOS Primitives Showcase**: Verified mutex lock hand-offs under contention, queue message transfers, and event flag synchronization.
+- [x] **Runtime monitor output verified on hardware**: UART serial output prints thread diagnostics table and showcase counters every 2 seconds:
+
+```text
+System Status:
+------------------------------------------
+Uptime:           257 s
+Byte Pool Size:   88572 bytes
+Allocated Memory: 8312 bytes
+Free Memory:      80260 bytes
+------------------------------------------
+
+Thread Name      Priority State      Run Count    Stack Peak (Max / Size)
+----------------------------------------------------------------------------
+monitor thread   9        READY      2575          120 / 1024 bytes (11%)
+reporter thread  10       SLEEP      256           432 / 1024 bytes (42%)
+blink thread     11       SLEEP      488           136 / 1024 bytes (13%)
+event thread     12       EVENT_FLAG 488           128 / 1024 bytes (12%)
+mutex thread 1   13       SLEEP      7319          144 / 1024 bytes (14%)
+mutex thread 2   13       READY      7319          144 / 1024 bytes (14%)
+queue sender     14       READY      1220          128 / 1024 bytes (12%)
+queue receiver   15       QUEUE_SUSP 1220          128 / 1024 bytes (12%)
+----------------------------------------------------------------------------
+Runs: Monitor: 2576 | Reporter: 123 | Blink: 488
+RTOS Showcase: Mutex Locks: 2440/2440 | Queue Msgs: 1220 | Event Wakes: 488
+```
+
+
+## Revision History
+
+```
+06-06-2026  Eclipse ThreadX contributors
+            Initial NUCLEO_F401RE BSP integration and validation.
+```
