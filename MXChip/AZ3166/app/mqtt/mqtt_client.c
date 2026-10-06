@@ -63,6 +63,13 @@ static volatile UINT button_b_pressed;
 static volatile uint8_t rolling_counter;
 static volatile float published_temperature_degC;
 
+static void set_rgb_led(UINT red, UINT green, UINT blue)
+{
+    RGB_LED_SET_R(red);
+    RGB_LED_SET_G(green);
+    RGB_LED_SET_B(blue);
+}
+
 typedef enum
 {
     TEMPERATURE_LIVE,
@@ -116,8 +123,10 @@ void display_thread_entry(ULONG parameter)
     char temperature_text[24];
     char counter_text[20];
     ULONG next_counter_tick = tx_time_get() + TX_TIMER_TICKS_PER_SECOND;
+    ULONG next_led_blink_tick = tx_time_get() + TX_TIMER_TICKS_PER_SECOND;
     ULONG poll_ticks = TX_TIMER_TICKS_PER_SECOND / 20u;
     temperature_mode_t temperature_mode = TEMPERATURE_LIVE;
+    UINT green_led_on = 1u;
     float frozen_temperature_degC = 0.0f;
     float last_displayed_temperature = -1000.0f;
     uint8_t last_displayed_counter = 0xFFu;
@@ -186,6 +195,28 @@ void display_thread_entry(ULONG parameter)
         published_temperature_degC = temperature;
 
         ULONG now = tx_time_get();
+        if (a_pressed && b_pressed)
+        {
+            set_rgb_led(2047u, 700u, 0u);
+        }
+        else if (a_pressed)
+        {
+            set_rgb_led(0u, 2047u, 0u);
+        }
+        else if (b_pressed)
+        {
+            set_rgb_led(2047u, 0u, 0u);
+        }
+        else
+        {
+            if ((LONG)(now - next_led_blink_tick) >= 0)
+            {
+                green_led_on = !green_led_on;
+                next_led_blink_tick = now + TX_TIMER_TICKS_PER_SECOND;
+            }
+            set_rgb_led(0u, green_led_on ? 2047u : 0u, 0u);
+        }
+
         if ((LONG)(now - next_counter_tick) >= 0)
         {
             if (!counter_should_pause)
@@ -386,9 +417,6 @@ void mqtt_thread_entry(ULONG parameter){
     UINT status;
 
     printf("Starting Eclipse ThreadX MQTT thread\r\n\r\n");
-    RGB_LED_SET_R(2047);
-    RGB_LED_SET_G(700);
-    RGB_LED_SET_B(0);
     wifi_display_status = DISPLAY_WIFI_INITIALIZING;
     mqtt_display_status = DISPLAY_MQTT_WAITING;
 
