@@ -29,17 +29,17 @@ typedef enum
 // ----------------------------------------------------------------------------
 // WiFi connection config
 // ----------------------------------------------------------------------------
-#define HOSTNAME      "eclipse-threadx"  //Change to unique hostname.
-#define WIFI_SSID     ""
-#define WIFI_PASSWORD "" 
+#define HOSTNAME      "sdv-hackathon_FEVengers"  //Change to unique hostname.
+#define WIFI_SSID     "Hackathon-Team-10"
+#define WIFI_PASSWORD "SDVTeam-123456"
 #define WIFI_MODE     WPA2_PSK_AES
 
 // ----------------------------------------------------------------------------
 // MQTT Config
 // ----------------------------------------------------------------------------
-#define MQTT_CLIENT_NAME     "ThreadXAZ3166" //Change to unique name.
+#define MQTT_CLIENT_NAME     "FEVengers_MQTT" //Change to unique name.
 // Use test.mosquitto.org in a pinch.
-#define MQTT_LOCAL_BROKER_IP (IP_ADDRESS(5, 196, 78, 28))
+#define MQTT_LOCAL_BROKER_IP (IP_ADDRESS(192, 168, 88, 99))
 #define MQTT_SUBSCRIBE_TOPIC MQTT_CLIENT_NAME "/incoming" 
 #define MQTT_PUBLISH_TOPIC   MQTT_CLIENT_NAME "/telemetry" 
 

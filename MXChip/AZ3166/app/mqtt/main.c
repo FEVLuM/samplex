@@ -39,14 +39,22 @@ TX_EVENT_FLAGS_GROUP mqtt_app_flag;
 TX_BYTE_POOL byte_pool;
 TX_THREAD telemetry_thread;
 TX_THREAD mqtt_thread;
+TX_THREAD display_thread;
 ULONG telemetry_thread_stack[ECLIPSETX_THREAD_STACK_SIZE / sizeof(ULONG)];
 ULONG mqtt_thread_stack[ECLIPSETX_THREAD_STACK_SIZE / sizeof(ULONG)];
-TX_EVENT_FLAGS_GROUP mqtt_app_flag;
+ULONG display_thread_stack[ECLIPSETX_THREAD_STACK_SIZE / sizeof(ULONG)];
 
 void tx_application_define(void* first_unused_memory)
 {
     systick_interval_set(TX_TIMER_TICKS_PER_SECOND);
     CHAR *pointer;
+
+    UINT status = tx_event_flags_create(&mqtt_app_flag, "MQTT event");
+    if (status != TX_SUCCESS)
+    {
+        printf("ERROR: MQTT event flags creation failed\r\n");
+        return;
+    }
 
     /* Allocate the message queue. */
     tx_byte_allocate(&byte_pool, (VOID **)&pointer, QUEUE_SIZE*sizeof(ULONG), TX_NO_WAIT);
@@ -55,7 +63,7 @@ void tx_application_define(void* first_unused_memory)
     tx_queue_create(&mqtt_queue, "Shared queue", TX_1_ULONG, pointer, QUEUE_SIZE*sizeof(ULONG));
 
     // Create Telemetry thread
-    UINT status = tx_thread_create(&telemetry_thread,
+    status = tx_thread_create(&telemetry_thread,
         "Eclipse ThreadX telemetry Thread",
         telemetry_thread_entry,
         0,
@@ -86,7 +94,24 @@ void tx_application_define(void* first_unused_memory)
     if (status != TX_SUCCESS)
     {
         printf("ERROR: Eclipse ThreadX MQTT thread creation failed\r\n");
-    }}
+    }
+
+    status = tx_thread_create(&display_thread,
+        "Eclipse ThreadX display Thread",
+        display_thread_entry,
+        0,
+        display_thread_stack,
+        ECLIPSETX_THREAD_STACK_SIZE,
+        ECLIPSETX_THREAD_PRIORITY,
+        ECLIPSETX_THREAD_PRIORITY,
+        TX_NO_TIME_SLICE,
+        TX_AUTO_START);
+
+    if (status != TX_SUCCESS)
+    {
+        printf("ERROR: Eclipse ThreadX display thread creation failed\r\n");
+    }
+}
 
 int main(void)
 {

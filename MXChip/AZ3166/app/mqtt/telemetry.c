@@ -18,15 +18,11 @@
 #include <stdio.h>
 
 // Refresh interval
-static const int32_t telemetry_interval = 5;
+static const int32_t telemetry_interval = 1;
 
 // Current data
 static sensor_data current_sensor_data;
-
-// Telemetry output
-static const int TELEMETRY_ROWS        = 5;
-static const int TELEMETRY_ROW_SIZE    = 40;
-const int TELEMETRY_BUFFER_SIZE = 256;
+static volatile float current_temperature_degC;
 
 /* Function to compare two float arrays
  * Returns true if arrays are equal within the given tolerance, otherwise false.
@@ -58,6 +54,12 @@ static UINT data_changed(sensor_data const * const current_data, sensor_data con
              compare_float_arrays(current_data->magnetic_mG, new_data->magnetic_mG, 3, 1.0f)); // Could also be 5.0f
 }
 
+#ifdef LOG_TELEMETRY
+// Telemetry output
+static const int TELEMETRY_ROWS        = 5;
+static const int TELEMETRY_ROW_SIZE    = 40;
+const int TELEMETRY_BUFFER_SIZE = 256;
+
 static void get_sensor_data_buffer(sensor_data data, char* output){
     char buf[TELEMETRY_ROWS][TELEMETRY_ROW_SIZE];
     npf_snprintf(buf[0], TELEMETRY_ROW_SIZE, "Pressure: %.2f\r\n", (double)data.pressure_hPa);
@@ -81,12 +83,6 @@ static void get_sensor_data_buffer(sensor_data data, char* output){
     }
 }
 
-/** 
- * Only used if LOG_TELEMETRY is defined. 
- * 
- * Uncomment the definition in telemetry.h if needed.
- */
-#ifdef LOG_TELEMETRY
 static void print_sensor_data(sensor_data data){
     char data_string[TELEMETRY_BUFFER_SIZE];
     get_sensor_data_buffer(data, data_string);
@@ -111,6 +107,7 @@ void telemetry_thread_entry(ULONG parameter)
         // Acquire fresh data.
         lps22hb_t lps22hb_data = lps22hb_data_read();
         new_sensor_data.temperature_degC = lps22hb_data.temperature_degC;
+        current_temperature_degC = new_sensor_data.temperature_degC;
         new_sensor_data.pressure_hPa = lps22hb_data.pressure_hPa;
         hts221_data_t hts221_data = hts221_data_read();
         new_sensor_data.humidity_perc = hts221_data.humidity_perc;
@@ -128,14 +125,15 @@ void telemetry_thread_entry(ULONG parameter)
                 printf("Telemetry changed.\r\n");
                 print_sensor_data(new_sensor_data);
             #endif
-            tx_event_flags_set(&mqtt_app_flag, MQTT_MESSAGE_READY, TX_OR);
-            current_sensor_data = new_sensor_data;
         }
         #ifdef LOG_TELEMETRY
         else{
             printf("Telemetry did not change.\r\n");
         }
         #endif
+
+        current_sensor_data = new_sensor_data;
+        tx_event_flags_set(&mqtt_app_flag, MQTT_MESSAGE_READY, TX_OR);
 
         tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND * telemetry_interval);
     }
@@ -144,6 +142,29 @@ void telemetry_thread_entry(ULONG parameter)
 /**
  * Returns current telemetry as a string.
  */
-void get_current_telemetry_string(char* output){
-    get_sensor_data_buffer(current_sensor_data, output);
+void get_current_telemetry_string(char* output, size_t output_size, float temperature_degC, uint8_t rolling_counter){
+    sensor_data data = current_sensor_data;
+    data.temperature_degC = temperature_degC;
+
+    npf_snprintf(output, output_size,
+                 "{\"pressure_hPa\":%.2f,"
+                 "\"temperature_degC\":%.2f,"
+                 "\"humidity_perc\":%.2f,"
+                 "\"acceleration_mg\":[%.2f,%.2f,%.2f],"
+                 "\"magnetic_mG\":[%.2f,%.2f,%.2f],"
+                 "\"counter\":%u}",
+                 (double)data.pressure_hPa,
+                 (double)data.temperature_degC,
+                 (double)data.humidity_perc,
+                 (double)data.acceleration_mg[0],
+                 (double)data.acceleration_mg[1],
+                 (double)data.acceleration_mg[2],
+                 (double)data.magnetic_mG[0],
+                 (double)data.magnetic_mG[1],
+                 (double)data.magnetic_mG[2],
+                 (unsigned)rolling_counter);
+}
+
+float get_current_temperature(void){
+    return current_temperature_degC;
 }

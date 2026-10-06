@@ -21,12 +21,13 @@
 #undef  NXD_MQTT_MAX_TOPIC_NAME_LENGTH
 #undef  NXD_MQTT_MAX_MESSAGE_LENGTH
 #define NXD_MQTT_MAX_TOPIC_NAME_LENGTH 70
-#define NXD_MQTT_MAX_MESSAGE_LENGTH 170
+#define NXD_MQTT_MAX_MESSAGE_LENGTH 256
 
 #define MQTT_CLIENT_STACK_SIZE 5120
 
 
 void mqtt_thread_entry(ULONG thread_input);
+void display_thread_entry(ULONG thread_input);
 
 /* Define the symbol for signaling a received message. */
 

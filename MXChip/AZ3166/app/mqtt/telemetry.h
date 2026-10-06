@@ -13,6 +13,7 @@
 #include "sensor.h"
 #include "tx_api.h"
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -31,7 +32,10 @@ typedef struct{
     float magnetic_mG[3];
 } sensor_data;
 
+#define TELEMETRY_TEMPERATURE_MAX_DEGC 85.0f
+
 void telemetry_thread_entry(ULONG parameter);
-void get_current_telemetry_string(char* output);
+void get_current_telemetry_string(char* output, size_t output_size, float temperature_degC, uint8_t rolling_counter);
+float get_current_temperature(void);
 
 #endif // _TELEMETRY_H
